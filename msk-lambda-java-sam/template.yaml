@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: This sample project deploys a Java Lambda function that processes messages from a MSK Topic.
+
+
+
+Resources:
+  VPC: 
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+  
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+  
+  PublicSubnet2: 
+    Type: AWS::EC2::Subnet
+    Properties: 
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  
+  PublicRoute: 
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation  
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:  
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  
+  MSKCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      ClusterName: my-cluster
+      KafkaVersion: 2.8.1 
+      NumberOfBrokerNodes: 2
+      BrokerNodeGroupInfo:
+        InstanceType: kafka.m5.large
+        ClientSubnets:
+          - !Ref PublicSubnet1
+          - !Ref PublicSubnet2
+
+
+# AWS Lambda function to poll messages from the MSK Cluster topic
+  MSKConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: com.example.mskconsumer.StreamLambdaHandler::handleRequest
+      Runtime: java17
+      CodeUri: ./target/msk-consumer-1.0-SNAPSHOT.jar
+      MemorySize: 512
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AmazonMSKFullAccess
+      Timeout: 30
+      Events:
+        MSKEvent:
+          Type: MSK
+          Properties:
+            StartingPosition: LATEST
+            Stream: !GetAtt MSKCluster.Arn
+            Topics:
+              - my-topic
+      Environment:
+        Variables:
+          MSK_BOOTSTRAP_SERVERS: !GetAtt MSKCluster.BootstrapBrokersSaslScram
+          MSK_SECURITY_PROTOCOL: SASL_SSL
+          MSK_SASL_MECHANISM: SCRAM-SHA-512
+          MSK_GROUP_ID: my-group
+          MSK_CLIENT_ID: my-client
+          MSK_TOPIC: my-topic
+
+  # # Create MSK Topic
+  # MSKTopic:
+  #   Type: AWS::MSK::Topic
+  #   Properties:
+  #     ClusterArn: !GetAtt MSKCluster.Arn
+  #     Name: my-topic
+  #     Partitions: 1
+  #     ReplicationFactor: 2
+      
+
+
+Outputs:
+  MSKClusterArn:
+    Value: !Ref MSKCluster
+
+  MSKBootstrapBrokers:
+    Value: !GetAtt MSKCluster.BootstrapBrokersSaslScram
